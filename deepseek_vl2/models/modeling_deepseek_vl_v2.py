@@ -336,6 +336,10 @@ class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel, GenerationMixin):
         language_config = config.language_config
         self.language = DeepseekV2ForCausalLM(language_config)
 
+        # Initialize tied-weight keys, parallel plans, and other
+        # post-init attributes that transformers >=4.50 expects.
+        self.post_init()
+
     def prepare_inputs_embeds(
             self,
             input_ids: torch.LongTensor,

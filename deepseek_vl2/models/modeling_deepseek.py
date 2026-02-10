@@ -40,6 +40,7 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
     SequenceClassifierOutputWithPast,
 )
+from transformers import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import (
     ALL_LAYERNORM_LAYERS,
@@ -1346,6 +1347,7 @@ class DeepseekV2PreTrainedModel(PreTrainedModel):
     _no_split_modules = ["DeepseekV2DecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn_2 = True
+    _supports_sdpa = True
     _supports_cache_class = True
 
     def _init_weights(self, module):
@@ -1621,7 +1623,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
         )
 
 
-class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
+class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
