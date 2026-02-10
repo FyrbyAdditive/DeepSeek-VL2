@@ -390,7 +390,9 @@ class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel, GenerationMixin):
         h = w = int(hw ** 0.5)
 
         # put image tokens into the input_embeds, [b, T, D]
-        input_embeds = self.language.get_input_embeddings()(input_ids)
+        # Clone so the in-place masked_scatter_ below doesn't fail on a
+        # leaf variable that requires grad during training.
+        input_embeds = self.language.get_input_embeddings()(input_ids).clone()
 
         # 根据self.tile_tag & self.global_view_pos填充image token sequence
         tile_index = 0
