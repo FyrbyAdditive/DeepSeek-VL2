@@ -479,6 +479,7 @@ class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel, GenerationMixin):
 
             if len(images_in_this_batch) > 0:
                 images_in_this_batch = torch.cat(images_in_this_batch, dim=0)
+                images_in_this_batch = images_in_this_batch.to(input_embeds.dtype)
                 input_embeds[idx].masked_scatter_(images_seq_mask[idx].unsqueeze(-1), images_in_this_batch)
 
         return input_embeds
