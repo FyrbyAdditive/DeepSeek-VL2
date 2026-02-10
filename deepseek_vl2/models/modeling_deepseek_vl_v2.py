@@ -272,6 +272,9 @@ class DeepseekVLV2PreTrainedModel(PreTrainedModel):
     base_model_prefix = "deepseek_vl_v2"
     _no_split_modules = []
     _skip_keys_device_placement = "past_key_values"
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
+    supports_gradient_checkpointing = True
 
 
 class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel):
