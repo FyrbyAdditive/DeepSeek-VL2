@@ -33,7 +33,6 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -66,15 +65,43 @@ if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
-# This makes `_prepare_4d_causal_attention_mask` a leaf function in the FX graph.
-# It means that the function will not be traced through and simply appear as a node in the graph.
-if is_torch_fx_available():
-    if not is_torch_greater_or_equal_than_1_13:
-        import torch.fx
-
-    _prepare_4d_causal_attention_mask = torch.fx.wrap(_prepare_4d_causal_attention_mask)
-
 logger = logging.get_logger(__name__)
+
+
+def _prepare_4d_causal_attention_mask(
+    attention_mask: Optional[torch.Tensor],
+    input_shape: tuple,
+    inputs_embeds: torch.Tensor,
+    past_key_values_length: int,
+) -> torch.Tensor:
+    """Create a 4D causal attention mask from a 2D padding mask.
+
+    Replaces the deprecated ``transformers.modeling_attn_mask_utils``
+    helper whose deprecation warning itself triggers a logging bug in
+    transformers >=5.2.
+    """
+    bsz, seq_len = input_shape
+    dtype = inputs_embeds.dtype
+    device = inputs_embeds.device
+    key_len = seq_len + past_key_values_length
+
+    # Lower-triangular causal mask: (1, 1, seq_len, key_len)
+    causal = torch.full((seq_len, key_len), torch.finfo(dtype).min, device=device, dtype=dtype)
+    causal_positions = torch.arange(key_len, device=device)
+    causal = causal.masked_fill(
+        causal_positions[None, :] <= (causal_positions[:seq_len, None] + past_key_values_length),
+        0.0,
+    )
+    causal = causal[None, None, :, :].expand(bsz, 1, -1, -1)
+
+    if attention_mask is not None and attention_mask.dim() == 2:
+        # Merge 2D padding mask into the causal mask.
+        # padding positions (0) → -inf, non-padding (1) → 0
+        expanded = attention_mask[:, None, None, :].to(dtype)
+        expanded = (1.0 - expanded) * torch.finfo(dtype).min
+        causal = causal + expanded
+
+    return causal
 
 _CONFIG_FOR_DOC = "DeepseekV2Config"
 
