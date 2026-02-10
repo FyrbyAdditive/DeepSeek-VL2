@@ -365,7 +365,9 @@ class VisionTransformer(nn.Module):
             self.patch_drop = nn.Identity()
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        # stochastic depth decay rule — use plain Python to avoid .item()
+        # failure on meta tensors created by accelerate's init_empty_weights.
+        dpr = [drop_path_rate * i / max(depth - 1, 1) for i in range(depth)]
         self.blocks = nn.Sequential(*[
             block_fn(
                 dim=embed_dim,

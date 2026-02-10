@@ -18,7 +18,8 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
-    PreTrainedModel
+    GenerationMixin,
+    PreTrainedModel,
 )
 from transformers.utils import logging
 
@@ -277,7 +278,7 @@ class DeepseekVLV2PreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
 
 
-class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel):
+class DeepseekVLV2ForCausalLM(DeepseekVLV2PreTrainedModel, GenerationMixin):
 
     def __init__(self, config: DeepseekVLV2Config):
         super().__init__(config)
