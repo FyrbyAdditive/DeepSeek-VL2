@@ -34,7 +34,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
-from transformers.models.llama.modeling_llama import LlamaAttention
+
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
@@ -1214,6 +1214,103 @@ class DeepseekV2FlashAttention2(DeepseekV2Attention):
         )
 
 
+class DeepseekV2MHAAttention(nn.Module):
+    """Standard multi-head attention for DeepSeek-VL2-tiny (use_mla=False).
+
+    Replaces ``LlamaAttention`` which changed its forward() API in
+    transformers >=5 to require pre-computed ``position_embeddings``
+    instead of ``position_ids``.  This class keeps the same calling
+    convention as :class:`DeepseekV2Attention` so that
+    ``DeepseekV2DecoderLayer`` works unchanged.
+    """
+
+    def __init__(self, config: DeepseekV2Config, layer_idx: Optional[int] = None):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.num_kv_heads = getattr(config, "num_key_value_heads", self.num_heads)
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rope_theta = config.rope_theta
+        self.attention_dropout = config.attention_dropout
+        self.is_causal = True
+
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
+
+        self.rotary_emb = DeepseekV2RotaryEmbedding(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+
+    @staticmethod
+    def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+        if n_rep == 1:
+            return hidden_states
+        bsz, num_kv_heads, slen, head_dim = hidden_states.shape
+        hidden_states = hidden_states[:, :, None, :, :].expand(bsz, num_kv_heads, n_rep, slen, head_dim)
+        return hidden_states.reshape(bsz, num_kv_heads * n_rep, slen, head_dim)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        bsz, q_len, _ = hidden_states.size()
+
+        q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        kv_seq_len = k.shape[-2]
+        if past_key_value is not None:
+            if self.layer_idx is None:
+                raise ValueError("Layer index required for caching.")
+            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+
+        cos, sin = self.rotary_emb(v, seq_len=kv_seq_len)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+
+        if past_key_value is not None:
+            cache_kwargs = {"sin": sin, "cos": cos}
+            k, v = past_key_value.update(k, v, self.layer_idx, cache_kwargs)
+
+        k = self._repeat_kv(k, self.num_kv_groups)
+        v = self._repeat_kv(v, self.num_kv_groups)
+
+        attn_weights = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.head_dim)
+
+        if attention_mask is not None:
+            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                raise ValueError(
+                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                )
+            attn_weights = attn_weights + attention_mask
+
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_output = torch.matmul(attn_weights, v)
+
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(bsz, q_len, self.hidden_size)
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
+
+
 ATTENTION_CLASSES = {
     "eager": DeepseekV2Attention,
     "sdpa": DeepseekV2Attention,
@@ -1223,9 +1320,9 @@ ATTENTION_CLASSES = {
     "mla_sdpa": DeepseekV2Attention,
     "mla_flash_attention_2": DeepseekV2FlashAttention2,
 
-    "mha_eager": LlamaAttention,
-    "mha_sdpa": LlamaAttention,
-    "mha_flash_attention_2": LlamaAttention,
+    "mha_eager": DeepseekV2MHAAttention,
+    "mha_sdpa": DeepseekV2MHAAttention,
+    "mha_flash_attention_2": DeepseekV2MHAAttention,
 }
 
 
