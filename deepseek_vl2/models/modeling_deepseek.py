@@ -1216,13 +1216,16 @@ class DeepseekV2FlashAttention2(DeepseekV2Attention):
 
 ATTENTION_CLASSES = {
     "eager": DeepseekV2Attention,
+    "sdpa": DeepseekV2Attention,
     "flash_attention_2": DeepseekV2FlashAttention2,
 
     "mla_eager": DeepseekV2Attention,
+    "mla_sdpa": DeepseekV2Attention,
     "mla_flash_attention_2": DeepseekV2FlashAttention2,
 
     "mha_eager": LlamaAttention,
-    "mha_flash_attention_2": LlamaAttention
+    "mha_sdpa": LlamaAttention,
+    "mha_flash_attention_2": LlamaAttention,
 }
 
 
